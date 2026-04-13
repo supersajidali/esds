@@ -1,67 +1,40 @@
-# =============================================================================
-#  Email Spam Detection — Streamlit App
-#  Prepared By: Sajid Ali
-#  Run: streamlit run app.py
-# =============================================================================
+"""
+Email Spam Detection — Streamlit App
+Prepared By: Sajid Ali
+
+Usage:
+    streamlit run app.py
+
+Expects model.pkl (a joblib/pickle-serialised sklearn Pipeline with
+steps named 'tfidf' and 'clf') in the same directory.
+"""
 
 import re
-import warnings
-
-import matplotlib.pyplot as plt
+import pickle
+import joblib
+import pathlib
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import streamlit as st
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    roc_auc_score,
-    roc_curve,
-)
-from sklearn.model_selection import cross_val_score, train_test_split
+import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.pipeline import Pipeline
 
-warnings.filterwarnings("ignore")
-
-# ── Config ────────────────────────────────────────────────────────────────────
-TEXT_COL     = "text"
-LABEL_COL    = "label"
-SPAM_VALUE   = "spam"
-TEST_SIZE    = 0.20
-RANDOM_STATE = 42
-
-# ── Page Setup ────────────────────────────────────────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Email Spam Detector",
     page_icon="📧",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.markdown("""
-    <style>
-        .main-title {font-size:2.4rem; font-weight:800; color:#e74c3c; text-align:center;}
-        .sub-title  {font-size:1.1rem; color:#555; text-align:center; margin-bottom:1.5rem;}
-        .metric-card{background:#f8f9fa; border-radius:12px; padding:18px; text-align:center;
-                     border:1px solid #dee2e6; box-shadow:0 2px 6px rgba(0,0,0,.06);}
-        .spam-badge {background:#e74c3c; color:white; padding:6px 18px; border-radius:20px;
-                     font-size:1.1rem; font-weight:700;}
-        .ham-badge  {background:#2ecc71; color:white; padding:6px 18px; border-radius:20px;
-                     font-size:1.1rem; font-weight:700;}
-        .section-header{font-size:1.25rem; font-weight:700; color:#2c3e50;
-                         border-left:4px solid #e74c3c; padding-left:10px; margin:1rem 0 .5rem;}
-    </style>
-""", unsafe_allow_html=True)
+# ── Constants ─────────────────────────────────────────────────────────────────
+MODEL_PATH = pathlib.Path("model.pkl")
 
-st.markdown('<p class="main-title">📧 Email Spam Detector</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">TF-IDF + Logistic Regression · Prepared by Sajid Ali</p>', unsafe_allow_html=True)
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-# =============================================================================
-# Helpers
-# =============================================================================
 def clean_text(text: str) -> str:
+    """Lowercase, remove URLs / numbers / punctuation, collapse whitespace."""
     text = str(text).lower()
     text = re.sub(r"http\S+|www\.\S+", " url ", text)
     text = re.sub(r"\d+", " num ", text)
@@ -70,345 +43,303 @@ def clean_text(text: str) -> str:
     return text
 
 
-@st.cache_resource(show_spinner="🔧 Training model…")
-def train_pipeline(df: pd.DataFrame):
-    df = df[[TEXT_COL, LABEL_COL]].dropna().copy()
-    df["clean_text"] = df[TEXT_COL].apply(clean_text)
-    df["spam"] = (df[LABEL_COL].astype(str).str.lower() == SPAM_VALUE).astype(int)
-
-    X, y = df["clean_text"], df["spam"]
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
-    )
-
-    pipeline = Pipeline([
-        ("tfidf", TfidfVectorizer(
-            ngram_range=(1, 2), max_features=50_000,
-            sublinear_tf=True, min_df=2, stop_words="english",
-        )),
-        ("clf", LogisticRegression(
-            C=1.0, solver="lbfgs", max_iter=1000,
-            class_weight="balanced", random_state=RANDOM_STATE,
-        )),
-    ])
-
-    cv_f1 = cross_val_score(pipeline, X_train, y_train, cv=5, scoring="f1", n_jobs=-1)
-    pipeline.fit(X_train, y_train)
-
-    y_pred      = pipeline.predict(X_test)
-    y_pred_prob = pipeline.predict_proba(X_test)[:, 1]
-
-    return pipeline, df, X_train, X_test, y_train, y_test, y_pred, y_pred_prob, cv_f1
+@st.cache_resource(show_spinner="Loading model…")
+def load_model() -> Pipeline:
+    """Load the trained sklearn Pipeline from disk."""
+    if not MODEL_PATH.exists():
+        st.error(f"❌ `{MODEL_PATH}` not found. Place your trained pipeline in the same folder as `app.py`.")
+        st.stop()
+    try:
+        model = joblib.load(MODEL_PATH)
+    except Exception:
+        with open(MODEL_PATH, "rb") as f:
+            model = pickle.load(f)
+    return model
 
 
-# =============================================================================
-# Sidebar — Upload
-# =============================================================================
+def predict(model: Pipeline, text: str) -> tuple[str, float]:
+    """Return (label, spam_probability)."""
+    cleaned = clean_text(text)
+    prob    = model.predict_proba([cleaned])[0][1]
+    label   = "SPAM" if prob >= 0.5 else "HAM"
+    return label, prob
+
+
+# ── Styling ───────────────────────────────────────────────────────────────────
+SPAM_COLOR = "#e74c3c"
+HAM_COLOR  = "#2ecc71"
+
+st.markdown("""
+<style>
+    .result-spam {
+        background: linear-gradient(135deg, #ff6b6b22, #e74c3c11);
+        border-left: 5px solid #e74c3c;
+        padding: 1.2rem 1.5rem;
+        border-radius: 8px;
+        margin-top: 1rem;
+    }
+    .result-ham {
+        background: linear-gradient(135deg, #6bcb7722, #2ecc7111);
+        border-left: 5px solid #2ecc71;
+        padding: 1.2rem 1.5rem;
+        border-radius: 8px;
+        margin-top: 1rem;
+    }
+    .big-label { font-size: 2rem; font-weight: 800; }
+    .sub-text  { font-size: 0.95rem; color: #888; margin-top: 0.3rem; }
+    .section-header {
+        font-size: 1.2rem;
+        font-weight: 700;
+        color: #4a4a4a;
+        margin-bottom: 0.5rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Load model ────────────────────────────────────────────────────────────────
+model = load_model()
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.header("⚙️ Settings")
-    uploaded = st.file_uploader("Upload emails.csv", type=["csv"])
-    st.markdown("---")
-    st.markdown("**Expected columns:**")
-    st.code("label , text", language="text")
-    st.markdown("Labels should be `spam` / `ham`")
-    st.markdown("---")
-    st.markdown("**Model:** Logistic Regression  \n**Features:** TF-IDF (1-gram + 2-gram)")
+    st.image("https://img.icons8.com/fluency/96/spam.png", width=64)
+    st.title("📧 Spam Detector")
+    st.markdown("**Model:** TF-IDF + Logistic Regression")
+    st.markdown("**Author:** Sajid Ali")
+    st.divider()
 
-if uploaded is None:
-    st.info("👈  Upload your **emails.csv** in the sidebar to get started.")
-    st.stop()
+    st.markdown("### ⚙️ Settings")
+    threshold = st.slider(
+        "Spam Probability Threshold",
+        min_value=0.1, max_value=0.9, value=0.5, step=0.05,
+        help="Emails with spam probability ≥ this value are flagged as SPAM."
+    )
+    show_keywords = st.checkbox("Show top spam/ham keywords", value=True)
+    top_n = st.slider("Number of keywords to show", 5, 30, 15, disabled=not show_keywords)
 
-# =============================================================================
-# Load & Train
-# =============================================================================
-raw_df = pd.read_csv(uploaded)
+    st.divider()
+    st.caption("Tip: Paste any email text in the main panel and click **Analyze**.")
 
-if TEXT_COL not in raw_df.columns or LABEL_COL not in raw_df.columns:
-    st.error(f"CSV must contain columns: `{LABEL_COL}` and `{TEXT_COL}`")
-    st.stop()
 
-pipeline, df, X_train, X_test, y_train, y_test, y_pred, y_pred_prob, cv_f1 = train_pipeline(raw_df)
+# ── Main Layout ───────────────────────────────────────────────────────────────
+st.title("📧 Email Spam Detection")
+st.markdown("Detect whether an email is **spam** or **ham (legitimate)** using a trained TF-IDF + Logistic Regression model.")
 
-accuracy = accuracy_score(y_test, y_pred)
-roc_auc  = roc_auc_score(y_test, y_pred_prob)
+tab1, tab2, tab3 = st.tabs(["🔍 Single Email", "📋 Batch Analysis", "📊 Model Insights"])
 
-# =============================================================================
-# Tabs
-# =============================================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🔍 Predict", "📊 EDA", "📈 Model Performance", "🔑 Keywords", "📋 Dataset"
-])
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 1 — Predict
-# ─────────────────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 1 — Single Email Prediction
+# ════════════════════════════════════════════════════════════════════════════════
 with tab1:
-    st.markdown('<p class="section-header">Classify an Email</p>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Enter an email to analyse</div>', unsafe_allow_html=True)
 
-    user_email = st.text_area(
-        "Paste or type email text below:",
-        placeholder="e.g. Congratulations! You've won a FREE iPhone…",
-        height=160,
+    # Quick sample emails
+    samples = {
+        "Select a sample…": "",
+        "🚨 Spam #1 — Prize winner": "Congratulations! You've won a FREE iPhone. Click here to claim your prize now!",
+        "🚨 Spam #2 — Bank alert": "URGENT: Your bank account has been suspended. Verify now to avoid charges.",
+        "🚨 Spam #3 — Cash prize": "Win $1000 cash prize! Send your details to claim immediately!",
+        "✅ Ham #1 — Lunch invite": "Hey, are we still meeting for lunch tomorrow at 12?",
+        "✅ Ham #2 — Work email": "Please find the attached quarterly report for your review.",
+        "✅ Ham #3 — Code review": "Can you please review the pull request I submitted this morning?",
+    }
+
+    chosen = st.selectbox("Quick samples", list(samples.keys()))
+    prefill = samples[chosen]
+
+    email_input = st.text_area(
+        "Email text",
+        value=prefill,
+        height=200,
+        placeholder="Paste or type the email body here…",
+        label_visibility="collapsed",
     )
 
-    col_btn, _ = st.columns([1, 4])
+    col_btn, col_clear = st.columns([1, 5])
     with col_btn:
-        classify = st.button("🚀 Classify", use_container_width=True)
+        analyze_clicked = st.button("🔍 Analyze", use_container_width=True, type="primary")
+    with col_clear:
+        if st.button("🗑️ Clear"):
+            email_input = ""
 
-    if classify:
-        if not user_email.strip():
-            st.warning("Please enter some email text.")
+    if analyze_clicked:
+        if not email_input.strip():
+            st.warning("Please enter some email text first.")
         else:
-            cleaned = clean_text(user_email)
-            pred    = pipeline.predict([cleaned])[0]
-            prob    = pipeline.predict_proba([cleaned])[0][1]
+            cleaned    = clean_text(email_input)
+            prob       = model.predict_proba([cleaned])[0][1]
+            is_spam    = prob >= threshold
+            label      = "SPAM" if is_spam else "HAM"
+            color      = SPAM_COLOR if is_spam else HAM_COLOR
+            icon       = "🚨" if is_spam else "✅"
+            css_class  = "result-spam" if is_spam else "result-ham"
+            confidence = prob if is_spam else (1 - prob)
 
-            st.markdown("---")
-            c1, c2, c3 = st.columns(3)
+            st.markdown(
+                f"""
+                <div class="{css_class}">
+                    <div class="big-label" style="color:{color}">{icon} {label}</div>
+                    <div class="sub-text">
+                        Spam probability: <strong>{prob*100:.1f}%</strong> &nbsp;|&nbsp;
+                        Confidence: <strong>{confidence*100:.1f}%</strong> &nbsp;|&nbsp;
+                        Threshold: <strong>{threshold:.0%}</strong>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-            with c1:
-                label_html = (
-                    '<span class="spam-badge">🚨 SPAM</span>'
-                    if pred == 1 else
-                    '<span class="ham-badge">✅ HAM</span>'
-                )
-                st.markdown(f"**Verdict:** {label_html}", unsafe_allow_html=True)
+            # Probability gauge
+            fig, ax = plt.subplots(figsize=(7, 0.6))
+            ax.barh([""], [prob],        color=SPAM_COLOR, alpha=0.85, height=0.5)
+            ax.barh([""], [1 - prob], left=[prob], color=HAM_COLOR, alpha=0.85, height=0.5)
+            ax.axvline(threshold, color="white", linewidth=2, linestyle="--")
+            ax.set_xlim(0, 1)
+            ax.set_xlabel("Spam probability →")
+            ax.set_xticks([0, 0.25, 0.5, threshold, 0.75, 1.0])
+            ax.set_xticklabels(["0%", "25%", "50%", f"{threshold:.0%}\n(threshold)", "75%", "100%"], fontsize=8)
+            ax.tick_params(left=False, labelleft=False)
+            ax.spines[:].set_visible(False)
+            fig.patch.set_alpha(0)
+            ax.set_facecolor("none")
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
 
-            with c2:
-                st.metric("Spam Probability", f"{prob*100:.1f}%")
-
-            with c3:
-                st.metric("Ham Probability", f"{(1-prob)*100:.1f}%")
-
-            # Probability bar
-            st.markdown("**Confidence:**")
-            prob_df = pd.DataFrame({
-                "Class": ["Ham", "Spam"],
-                "Probability": [(1 - prob) * 100, prob * 100],
-            })
-            fig, ax = plt.subplots(figsize=(7, 1.4))
-            colors = ["#2ecc71", "#e74c3c"]
-            ax.barh(prob_df["Class"], prob_df["Probability"], color=colors, edgecolor="white", height=0.5)
-            ax.set_xlim(0, 100)
-            ax.set_xlabel("Probability (%)")
-            ax.axvline(50, color="gray", linewidth=0.8, linestyle="--")
-            for i, v in enumerate(prob_df["Probability"]):
-                ax.text(v + 1, i, f"{v:.1f}%", va="center", fontsize=10, fontweight="bold")
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
-
-    st.markdown("---")
-    st.markdown('<p class="section-header">Batch Predict on Sample Emails</p>', unsafe_allow_html=True)
-
-    samples = [
-        "Congratulations! You've won a FREE iPhone. Click here to claim your prize now!",
-        "Hey, are we still meeting for lunch tomorrow at 12?",
-        "URGENT: Your bank account has been suspended. Verify now to avoid charges.",
-        "Please find the attached quarterly report for your review.",
-        "Win $1000 cash prize! Send your details to claim immediately!",
-        "Can you please review the pull request I submitted this morning?",
-    ]
-
-    cleaned_s = [clean_text(e) for e in samples]
-    preds_s   = pipeline.predict(cleaned_s)
-    probs_s   = pipeline.predict_proba(cleaned_s)[:, 1]
-
-    results = pd.DataFrame({
-        "Email"       : [e[:80] + ("…" if len(e) > 80 else "") for e in samples],
-        "Verdict"     : ["🚨 SPAM" if p == 1 else "✅ HAM" for p in preds_s],
-        "Spam Prob %" : [f"{p*100:.1f}%" for p in probs_s],
-    })
-    st.dataframe(results, use_container_width=True, hide_index=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 2 — EDA
-# ─────────────────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 2 — Batch Analysis
+# ════════════════════════════════════════════════════════════════════════════════
 with tab2:
-    st.markdown('<p class="section-header">Dataset Overview</p>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Analyse multiple emails at once</div>', unsafe_allow_html=True)
 
-    counts = df[LABEL_COL].value_counts()
-    spam_n = counts.get(SPAM_VALUE, 0)
-    ham_n  = counts.get("ham", 0)
+    input_method = st.radio("Input method", ["Paste emails (one per line)", "Upload CSV file"], horizontal=True)
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Emails", f"{len(df):,}")
-    m2.metric("Spam", f"{spam_n:,}")
-    m3.metric("Ham",  f"{ham_n:,}")
-    m4.metric("Spam Rate", f"{spam_n/len(df)*100:.1f}%")
+    emails_to_check = []
 
-    col1, col2 = st.columns(2)
+    if input_method == "Paste emails (one per line)":
+        bulk_text = st.text_area(
+            "Emails (one per line)",
+            height=200,
+            placeholder="Paste each email on a new line…",
+            label_visibility="collapsed",
+        )
+        if bulk_text.strip():
+            emails_to_check = [e.strip() for e in bulk_text.strip().splitlines() if e.strip()]
 
-    with col1:
-        fig, ax = plt.subplots(figsize=(5, 3.5))
-        colors = ["#e74c3c", "#2ecc71"]
-        ax.bar(counts.index, counts.values, color=colors, edgecolor="white", linewidth=1.5)
-        ax.set_title("Email Count by Label", fontweight="bold")
-        ax.set_ylabel("Count")
-        for i, v in enumerate(counts.values):
-            ax.text(i, v + 0.5, str(v), ha="center", fontweight="bold")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
+    else:
+        uploaded = st.file_uploader("Upload a CSV file", type=["csv"])
+        if uploaded:
+            df_up = pd.read_csv(uploaded)
+            st.dataframe(df_up.head(), use_container_width=True)
+            col_name = st.selectbox("Which column contains the email text?", df_up.columns.tolist())
+            emails_to_check = df_up[col_name].astype(str).tolist()
 
-    with col2:
-        fig, ax = plt.subplots(figsize=(5, 3.5))
-        ax.pie(counts.values, labels=counts.index, autopct="%1.1f%%",
-               colors=colors, startangle=90,
-               wedgeprops=dict(edgecolor="white", linewidth=2))
-        ax.set_title("Spam vs Ham Ratio", fontweight="bold")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
+    if st.button("🔍 Analyze All", type="primary") and emails_to_check:
+        with st.spinner(f"Classifying {len(emails_to_check)} emails…"):
+            cleaned_list = [clean_text(e) for e in emails_to_check]
+            probs        = model.predict_proba(cleaned_list)[:, 1]
+            labels       = ["🚨 SPAM" if p >= threshold else "✅ HAM" for p in probs]
 
-    st.markdown('<p class="section-header">Text Length Analysis</p>', unsafe_allow_html=True)
+        results_df = pd.DataFrame({
+            "Email Preview" : [e[:90] + ("…" if len(e) > 90 else "") for e in emails_to_check],
+            "Prediction"    : labels,
+            "Spam Prob %"   : [f"{p*100:.1f}%" for p in probs],
+        })
 
-    df["text_length"] = df[TEXT_COL].astype(str).apply(len)
-    df["word_count"]  = df[TEXT_COL].astype(str).apply(lambda x: len(x.split()))
+        spam_count = sum(1 for l in labels if "SPAM" in l)
+        ham_count  = len(labels) - spam_count
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4))
-    for label, color in zip([SPAM_VALUE, "ham"], ["#e74c3c", "#2ecc71"]):
-        subset = df[df[LABEL_COL] == label]
-        axes[0].hist(subset["text_length"], bins=25, alpha=0.65, label=label, color=color, edgecolor="white")
-        axes[1].hist(subset["word_count"],  bins=25, alpha=0.65, label=label, color=color, edgecolor="white")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Emails", len(emails_to_check))
+        m2.metric("🚨 Spam Detected", spam_count)
+        m3.metric("✅ Ham (Legitimate)", ham_count)
 
-    axes[0].set_title("Character Length Distribution", fontweight="bold")
-    axes[0].set_xlabel("Characters"); axes[0].set_ylabel("Frequency"); axes[0].legend()
-    axes[1].set_title("Word Count Distribution", fontweight="bold")
-    axes[1].set_xlabel("Words"); axes[1].set_ylabel("Frequency"); axes[1].legend()
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close()
+        # Pie chart
+        if spam_count > 0 or ham_count > 0:
+            fig, ax = plt.subplots(figsize=(4, 4))
+            ax.pie(
+                [spam_count, ham_count],
+                labels=["Spam", "Ham"],
+                colors=[SPAM_COLOR, HAM_COLOR],
+                autopct="%1.1f%%",
+                startangle=90,
+                wedgeprops=dict(edgecolor="white", linewidth=2),
+            )
+            ax.set_title("Batch Result Distribution", fontweight="bold")
+            st.pyplot(fig, use_container_width=False)
+            plt.close(fig)
 
+        st.dataframe(
+            results_df,
+            use_container_width=True,
+            column_config={
+                "Spam Prob %" : st.column_config.TextColumn("Spam Prob %"),
+                "Prediction"  : st.column_config.TextColumn("Prediction"),
+            },
+        )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 3 — Model Performance
-# ─────────────────────────────────────────────────────────────────────────────
+        csv_out = results_df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Download Results as CSV", csv_out, "spam_results.csv", "text/csv")
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Model Insights (top keywords)
+# ════════════════════════════════════════════════════════════════════════════════
 with tab3:
-    st.markdown('<p class="section-header">Key Metrics</p>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Model Insights</div>', unsafe_allow_html=True)
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Test Accuracy",   f"{accuracy*100:.2f}%")
-    m2.metric("ROC-AUC",         f"{roc_auc:.4f}")
-    m3.metric("Mean CV F1",      f"{cv_f1.mean():.4f}")
-    m4.metric("Training Emails", f"{len(X_train):,}")
+    try:
+        vectorizer    = model.named_steps["tfidf"]
+        clf           = model.named_steps["clf"]
+        feature_names = np.array(vectorizer.get_feature_names_out())
+        coef          = clf.coef_[0]
 
-    col1, col2 = st.columns(2)
+        if show_keywords:
+            top_spam_idx = coef.argsort()[-top_n:][::-1]
+            top_ham_idx  = coef.argsort()[:top_n]
 
-    with col1:
-        st.markdown('<p class="section-header">Confusion Matrix</p>', unsafe_allow_html=True)
-        cm = confusion_matrix(y_test, y_pred)
-        fig, ax = plt.subplots(figsize=(5, 4))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax,
-                    xticklabels=["Ham", "Spam"], yticklabels=["Ham", "Spam"],
-                    annot_kws={"size": 18, "weight": "bold"})
-        ax.set_xlabel("Predicted Label"); ax.set_ylabel("True Label")
-        ax.set_title("Confusion Matrix", fontweight="bold")
-        labels = [["TN", "FP"], ["FN", "TP"]]
-        for i in range(2):
-            for j in range(2):
-                ax.text(j + 0.5, i + 0.75, labels[i][j], ha="center", fontsize=9, color="gray")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
+            spam_words   = feature_names[top_spam_idx]
+            spam_weights = coef[top_spam_idx]
+            ham_words    = feature_names[top_ham_idx]
+            ham_weights  = coef[top_ham_idx]
 
-    with col2:
-        st.markdown('<p class="section-header">ROC Curve</p>', unsafe_allow_html=True)
-        fpr, tpr, _ = roc_curve(y_test, y_pred_prob)
-        fig, ax = plt.subplots(figsize=(5, 4))
-        ax.plot(fpr, tpr, color="steelblue", lw=2.5, label=f"LR (AUC = {roc_auc:.3f})")
-        ax.fill_between(fpr, tpr, alpha=0.08, color="steelblue")
-        ax.plot([0, 1], [0, 1], "k--", lw=1.5, label="Random")
-        ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
-        ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate")
-        ax.set_title("ROC Curve", fontweight="bold")
-        ax.legend(loc="lower right")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
+            col_a, col_b = st.columns(2)
 
-    st.markdown('<p class="section-header">5-Fold Cross-Validation F1 Scores</p>', unsafe_allow_html=True)
-    fig, ax = plt.subplots(figsize=(8, 3.5))
-    x = np.arange(5)
-    bars = ax.bar(x, cv_f1, color="steelblue", alpha=0.85, edgecolor="white", linewidth=1.5)
-    ax.axhline(cv_f1.mean(), color="crimson", linestyle="--", lw=2, label=f"Mean F1 = {cv_f1.mean():.3f}")
-    ax.set_xticks(x); ax.set_xticklabels([f"Fold {i+1}" for i in range(5)])
-    ax.set_ylim(0, 1.05); ax.set_ylabel("F1 Score")
-    ax.set_title("Cross-Validation F1 per Fold", fontweight="bold")
-    ax.legend()
-    for bar, score in zip(bars, cv_f1):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                f"{score:.3f}", ha="center", fontsize=10, fontweight="bold")
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close()
+            with col_a:
+                st.markdown(f"#### 🚨 Top {top_n} Spam Keywords")
+                fig, ax = plt.subplots(figsize=(6, top_n * 0.38 + 1))
+                ax.barh(spam_words[::-1], spam_weights[::-1], color=SPAM_COLOR, alpha=0.85, edgecolor="white")
+                ax.set_xlabel("Logistic Regression Weight")
+                ax.set_title(f"Top {top_n} SPAM Keywords", fontweight="bold", color=SPAM_COLOR)
+                ax.axvline(0, color="black", linewidth=0.8)
+                plt.tight_layout()
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
 
-    st.markdown('<p class="section-header">Classification Report</p>', unsafe_allow_html=True)
-    report = classification_report(y_test, y_pred, target_names=["Ham", "Spam"], output_dict=True)
-    report_df = pd.DataFrame(report).transpose().round(3)
-    st.dataframe(report_df, use_container_width=True)
+            with col_b:
+                st.markdown(f"#### ✅ Top {top_n} Ham Keywords")
+                fig, ax = plt.subplots(figsize=(6, top_n * 0.38 + 1))
+                ax.barh(ham_words, np.abs(ham_weights), color=HAM_COLOR, alpha=0.85, edgecolor="white")
+                ax.set_xlabel("|Logistic Regression Weight|")
+                ax.set_title(f"Top {top_n} HAM Keywords", fontweight="bold", color="#27ae60")
+                plt.tight_layout()
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
 
+        # Model info table
+        st.divider()
+        st.markdown("#### ℹ️ Pipeline Configuration")
+        tfidf_params = vectorizer.get_params()
+        clf_params   = clf.get_params()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 4 — Keywords
-# ─────────────────────────────────────────────────────────────────────────────
-with tab4:
-    st.markdown('<p class="section-header">Top Spam & Ham Keywords</p>', unsafe_allow_html=True)
+        info = {
+            "TF-IDF — max_features"  : tfidf_params.get("max_features"),
+            "TF-IDF — ngram_range"   : str(tfidf_params.get("ngram_range")),
+            "TF-IDF — sublinear_tf"  : tfidf_params.get("sublinear_tf"),
+            "TF-IDF — stop_words"    : tfidf_params.get("stop_words"),
+            "LogReg — C"             : clf_params.get("C"),
+            "LogReg — solver"        : clf_params.get("solver"),
+            "LogReg — class_weight"  : clf_params.get("class_weight"),
+            "Vocabulary size"        : len(feature_names),
+        }
+        st.table(pd.DataFrame(info.items(), columns=["Parameter", "Value"]))
 
-    top_n = st.slider("Number of keywords to show", 10, 30, 20)
-
-    vectorizer    = pipeline.named_steps["tfidf"]
-    clf           = pipeline.named_steps["clf"]
-    feature_names = np.array(vectorizer.get_feature_names_out())
-    coef          = clf.coef_[0]
-
-    top_spam_idx = coef.argsort()[-top_n:][::-1]
-    top_ham_idx  = coef.argsort()[:top_n]
-
-    spam_words   = feature_names[top_spam_idx]
-    spam_weights = coef[top_spam_idx]
-    ham_words    = feature_names[top_ham_idx]
-    ham_weights  = coef[top_ham_idx]
-
-    fig, axes = plt.subplots(1, 2, figsize=(15, max(5, top_n * 0.32)))
-
-    axes[0].barh(spam_words[::-1], spam_weights[::-1], color="#e74c3c", alpha=0.85, edgecolor="white")
-    axes[0].set_title(f"Top {top_n} SPAM Keywords", fontsize=13, fontweight="bold", color="#e74c3c")
-    axes[0].set_xlabel("Logistic Regression Weight")
-    axes[0].axvline(0, color="black", linewidth=0.8)
-
-    axes[1].barh(ham_words, np.abs(ham_weights), color="#2ecc71", alpha=0.85, edgecolor="white")
-    axes[1].set_title(f"Top {top_n} HAM Keywords", fontsize=13, fontweight="bold", color="#27ae60")
-    axes[1].set_xlabel("|Logistic Regression Weight|")
-
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close()
-
-    col1, col2 = st.columns(2)
-    with col1:
-        spam_kw_df = pd.DataFrame({"Keyword": spam_words, "Weight": spam_weights.round(4)})
-        st.dataframe(spam_kw_df, use_container_width=True, hide_index=True)
-    with col2:
-        ham_kw_df = pd.DataFrame({"Keyword": ham_words, "Weight": ham_weights.round(4)})
-        st.dataframe(ham_kw_df, use_container_width=True, hide_index=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 5 — Dataset
-# ─────────────────────────────────────────────────────────────────────────────
-with tab5:
-    st.markdown('<p class="section-header">Raw Dataset</p>', unsafe_allow_html=True)
-
-    search = st.text_input("🔎 Filter emails by keyword", "")
-    display_df = raw_df.copy()
-    if search:
-        mask = display_df[TEXT_COL].str.contains(search, case=False, na=False)
-        display_df = display_df[mask]
-
-    st.write(f"Showing **{len(display_df):,}** of **{len(raw_df):,}** rows")
-    st.dataframe(display_df, use_container_width=True, height=450)
-
-    csv_bytes = raw_df.to_csv(index=False).encode()
-    st.download_button("⬇️ Download Dataset", csv_bytes, "emails.csv", "text/csv")
+    except (KeyError, AttributeError) as exc:
+        st.warning(f"Could not extract model internals: {exc}. Make sure the pipeline has steps named `tfidf` and `clf`.")
